@@ -8,27 +8,34 @@ import com.example.agent.module.ApacheMonitorModule;
 import com.example.agent.module.DatabaseMonitorModule;
 import com.example.agent.module.GeoServerMonitorModule;
 import com.example.agent.module.OsMonitorModule;
+import com.example.agent.util.AgentConfigVO;
+import com.example.agent.util.AgentWebSocketClient;
 import com.example.agent.util.HttpUtil;
 import org.json.JSONObject;
 
 import java.io.FileInputStream;
 import java.io.InputStream;
+import java.net.URI;
 import java.sql.Connection;
 import java.util.*;
 import java.util.stream.Collectors;
 
 public class MonitoringAgent {
-    private static Properties config = new Properties();
-    private List<MonitorModule> modules = new ArrayList<>();
-    private String serverId;
+    private final List<MonitorModule> modules = new ArrayList<>();
+    private final AgentConfigVO config;
+    private final AgentWebSocketClient socket;
 
-    public MonitoringAgent() throws Exception {
-        serverId = config.getProperty("server.id", "default-server");
 
-        String modulesStr = config.getProperty("monitor.modules", "");
-        Set<String> enabledModules = Arrays.stream(modulesStr.split(","))
+
+    public MonitoringAgent(AgentConfigVO config, AgentWebSocketClient socket) throws Exception {
+        this.config = config;
+        this.socket = socket;
+
+
+        Set<String> enabledModules = Arrays.stream(config.getProperty("monitor.modules").split(","))
                 .map(String::trim)
                 .collect(Collectors.toSet());
+
         if (enabledModules.contains("os")) {
             modules.add(new OsMonitorModule());
         }
@@ -36,9 +43,9 @@ public class MonitoringAgent {
         // DB 연결팩토리 생성 및 DB 모듈 추가
         DBConnectionFactory dbFactory = null;
         if (enabledModules.contains("postgresql")) {
-            dbFactory = new PostgresConnectionFactory(config);
+            dbFactory = new PostgresConnectionFactory(config.getRaw());
         } else if (enabledModules.contains("oracle")) {
-            dbFactory = new OracleConnectionFactory(config);
+            dbFactory = new OracleConnectionFactory(config.getRaw());
         }
 
         if (dbFactory != null) {
@@ -60,7 +67,7 @@ public class MonitoringAgent {
 
     public void collectAndSendData() {
         JSONObject fullData = new JSONObject();
-        fullData.put("serverId", serverId);
+        fullData.put("serverId", config.getServerId());
 
         for (MonitorModule module : modules) {
             try {
@@ -75,46 +82,24 @@ public class MonitoringAgent {
             }
         }
 
+
         System.out.println(fullData.toString(2));
 
-        // TODO: 모니터링 서버로 HTTP POST 전송 구현
-        HttpUtil.postJson(config.getProperty("monitoring.Server.Url"), fullData.toString());
+
+        // TODO: 모니터링 서버로 HTTP POST 전송
+        //HttpUtil.postJson(config.getProperty("monitoring.Server.Url"), fullData.toString());
+        // TODO: 모니터링 서버로 WebSocket 전송
+        try {
+            if (socket.isOpen()) {
+                socket.send(fullData.toString());
+            } else {
+                System.err.println("[WARN] WebSocket이 열려있지 않아 데이터 전송 실패");
+            }
+        } catch (Exception ex) {
+            System.err.println("[ERROR] WebSocket 전송 실패: " + ex.getMessage());
+        }
+
     }
 
-    public static void main(String[] args) throws Exception {
 
-        //properties 읽어오는 부분
-        InputStream inputStream = MonitoringAgent.class.getClassLoader().getResourceAsStream("config.properties");
-        config.load(inputStream);
-        inputStream.close();
-        
-        MonitoringAgent agent = new MonitoringAgent();
-
-
-
-        if (inputStream == null) {
-            System.err.println("config.properties not found in classpath");
-            return;
-        }
-        /*
-        if (!HttpUtil.isServerAvailable(config.getProperty("monitoring.Server.Url"))) {
-            System.err.println("모니터링 서버와 연결할 수 없습니다: " + config.getProperty("monitoring.Server.Url"));
-            System.exit(1);  // 종료 또는 재시도 로직 추가 가능
-            Thread.sleep(10000); // 10초 주기 실행
-            main(args);
-
-            return;
-        }
-        */
-
-
-
-
-        //단일 테스트를 위하여 while 주석처리 상태
-        agent.collectAndSendData();
-//        while (true) {
-//            agent.collectAndSendData();
-//            Thread.sleep(10000); // 10초 주기 실행
-//        }
-    }
 }
